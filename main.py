@@ -3,6 +3,7 @@ from pydantic import BaseModel, field_validator  # Ganti import validator jadi f
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import joblib
+from mangum import Mangum  # Import Mangum
 
 app = FastAPI()
 
@@ -117,3 +118,6 @@ def predict(data: InputData):
     except Exception as e:
         print("Error saat prediksi:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+# Buat handler mangum untuk AWS Lambda
+handler = Mangum(app)
