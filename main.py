@@ -1,9 +1,8 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, field_validator  # Ganti import validator jadi field_validator
+from pydantic import BaseModel, validator
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import joblib
-from mangum import Mangum  # Import Mangum
 
 app = FastAPI()
 
@@ -32,11 +31,21 @@ class InputData(BaseModel):
     PekerjaanAyah: str
     PekerjaanIbu: str
 
-    @field_validator("NIM")  # Ganti @validator jadi @field_validator
+    @validator("NIM")
     def nim_min_length(cls, v):
         if len(v) < 2:
             raise ValueError("NIM harus minimal 2 karakter")
         return v
+
+@app.get("/encoder_categories")
+def get_encoder_categories():
+    try:
+        categories = {}
+        for col in encoders:
+            categories[col] = list(encoders[col].classes_)
+        return categories
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/predict")
 def predict(data: InputData):
@@ -118,6 +127,3 @@ def predict(data: InputData):
     except Exception as e:
         print("Error saat prediksi:", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-# Buat handler mangum untuk AWS Lambda
-handler = Mangum(app)
