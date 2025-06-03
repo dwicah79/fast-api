@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator  # Ganti import validator jadi field_validator
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import joblib
@@ -31,7 +31,7 @@ class InputData(BaseModel):
     PekerjaanAyah: str
     PekerjaanIbu: str
 
-    @validator("NIM")
+    @field_validator("NIM")  # Ganti @validator jadi @field_validator
     def nim_min_length(cls, v):
         if len(v) < 2:
             raise ValueError("NIM harus minimal 2 karakter")
