@@ -37,15 +37,37 @@ class InputData(BaseModel):
             raise ValueError("NIM harus minimal 2 karakter")
         return v
 
-@app.get("/encoder_categories")
+@app.get("/encoder_categories", response_model=dict)
 def get_encoder_categories():
     try:
+        if not encoders:
+            return {
+                "success": False,
+                "categories": {},
+                "message": "Tidak ada encoder yang dimuat"
+            }
+        
         categories = {}
-        for col in encoders:
-            categories[col] = list(encoders[col].classes_)
-        return categories
+        for feature_name, encoder in encoders.items():
+            if hasattr(encoder, 'classes_'):
+                categories[feature_name] = list(encoder.classes_)
+            else:
+                categories[feature_name] = f"Encoder {type(encoder).__name__} tidak memiliki atribut classes_"
+        
+        return {
+            "success": True,
+            "categories": categories,
+            "message": "Berhasil mengambil kategori encoder"
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "message": f"Terjadi kesalahan saat mengambil kategori encoder: {str(e)}"
+            }
+        )
 
 @app.post("/predict")
 def predict(data: InputData):
