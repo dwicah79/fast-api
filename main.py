@@ -1,151 +1,105 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, validator
-from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
-import joblib
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi.responses import JSONResponse
+from io import BytesIO
+import pandas as pd
+import math
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # izinkan semua origin
-    allow_credentials=True,
-    allow_methods=["*"],  # izinkan semua method (GET, POST, dll)
-    allow_headers=["*"],  # izinkan semua header
-)
+# Dummy model class
+class InputData:
+    def __init__(self, NIM, JenisKelamin, SKS, IPK, PekerjaanAyah, PekerjaanIbu):
+        self.NIM = NIM
+        self.JenisKelamin = JenisKelamin
+        self.SKS = SKS
+        self.IPK = IPK
+        self.PekerjaanAyah = PekerjaanAyah
+        self.PekerjaanIbu = PekerjaanIbu
 
-# Load model dan encoder
-model = joblib.load("Model/model_decision_tree.pkl")
-encoders = joblib.load("Model/label_encoders.pkl")
-label_mapping = joblib.load("Model/label_mapping.pkl")  # {0: "Tidak Putus Studi", 1: "Putus Studi"}
-
-# Fungsi untuk mengekstrak angkatan dari NIM (2 digit pertama)
-def get_angkatan_from_nim(nim: str) -> str:
-    return nim[:2]
-
-class InputData(BaseModel):
-    NIM: str  # Input NIM untuk menentukan angkatan
-    JenisKelamin: str  # Contoh: "L" atau "P"
-    SKS: int
-    IPK: float
-    PekerjaanAyah: str
-    PekerjaanIbu: str
-
-    @validator("NIM")
-    def nim_min_length(cls, v):
-        if len(v) < 2:
-            raise ValueError("NIM harus minimal 2 karakter")
-        return v
-
-@app.get("/encoder_categories", response_model=dict)
-def get_encoder_categories():
-    try:
-        if not encoders:
-            return {
-                "success": False,
-                "categories": {},
-                "message": "Tidak ada encoder yang dimuat"
-            }
-        
-        categories = {}
-        for feature_name, encoder in encoders.items():
-            if hasattr(encoder, 'classes_'):
-                categories[feature_name] = list(encoder.classes_)
-            else:
-                categories[feature_name] = f"Encoder {type(encoder).__name__} tidak memiliki atribut classes_"
-        
-        return {
-            "success": True,
-            "categories": categories,
-            "message": "Berhasil mengambil kategori encoder"
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "message": f"Terjadi kesalahan saat mengambil kategori encoder: {str(e)}"
-            }
-        )
-
-@app.post("/predict")
 def predict(data: InputData):
+    return {
+        "prediction": "LULUS" if data.IPK >= 2.5 else "TIDAK LULUS",
+        "label": 1 if data.IPK >= 2.5 else 0,
+        "probability": round(min(max(data.IPK / 4.0, 0), 1), 2)
+    }
+
+def sanitize_json(obj):
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_json(i) for i in obj]
+    else:
+        return obj
+
+@app.get("/")
+def home():
+    return {"message": "FastAPI jalan"}
+
+@app.post("/predict_excel")
+async def predict_excel(
+    file: UploadFile = File(...),
+    page: int = Query(1, description="Page number (starts from 1)")
+):
     try:
-        angkatan = get_angkatan_from_nim(data.NIM)
-        print(f"Angkatan dari NIM: {angkatan}")
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
 
-        # Mapping input ke nama kolom yang sesuai dengan encoder
-        input_dict = {
-            "angkatan": angkatan,
-            "Jenis Kelamin": data.JenisKelamin,
-            "Pekerjaan Ayah": data.PekerjaanAyah,
-            "Pekerjaan Ibu": data.PekerjaanIbu
-        }
-        print("Input dict:", input_dict)
+        required_columns = ["NIM", "Jenis Kelamin", "Pekerjaan Ayah", "Pekerjaan Ibu", "SKS", "IPK"]
+        missing_columns = [col for col in required_columns if col not in df.columns]
 
-        encoded_features = []
+        if missing_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Kolom berikut tidak ditemukan di file Excel: {', '.join(missing_columns)}"
+            )
 
-        # Urutan fitur harus sama dengan saat training:
-        # ['angkatan', 'Jenis Kelamin', 'SKS', 'IPK', 'Pekerjaan Ayah', 'Pekerjaan Ibu']
-        
-        # Encode 'angkatan' dan 'Jenis Kelamin'
-        for col in ['angkatan', 'Jenis Kelamin']:
-            encoder = encoders.get(col)
-            if encoder is None:
-                raise HTTPException(status_code=500, detail=f"Encoder untuk '{col}' tidak ditemukan.")
+        results = []
+
+        for _, row in df.iterrows():
             try:
-                encoded = encoder.transform([input_dict[col]])[0]
-            except Exception as e:
-                print(f"Error encode kolom '{col}' dengan nilai '{input_dict[col]}': {e}")
-                raise HTTPException(status_code=400, detail=f"Nilai '{input_dict[col]}' tidak dikenali untuk kolom '{col}'.")
-            print(f"Encoded {col}: {encoded}")
-            encoded_features.append(encoded)
+                data = InputData(
+                    NIM=str(row["NIM"]),
+                    JenisKelamin=row["Jenis Kelamin"],
+                    SKS=int(row["SKS"]),
+                    IPK=float(row["IPK"]),
+                    PekerjaanAyah=row["Pekerjaan Ayah"],
+                    PekerjaanIbu=row["Pekerjaan Ibu"]
+                )
+                result = predict(data)
 
-        # Tambahkan fitur numerik
-        encoded_features.append(data.SKS)
-        encoded_features.append(data.IPK)
-        print("Fitur numerik:", [data.SKS, data.IPK])
+                row_result = row.to_dict()
+                row_result.update({
+                    "prediction": result["prediction"],
+                    "label": result["label"],
+                    "probability": result["probability"]
+                })
+                results.append(row_result)
 
-        # Encode 'Pekerjaan Ayah' dan 'Pekerjaan Ibu'
-        for col in ['Pekerjaan Ayah', 'Pekerjaan Ibu']:
-            encoder = encoders.get(col)
-            if encoder is None:
-                raise HTTPException(status_code=500, detail=f"Encoder untuk '{col}' tidak ditemukan.")
-            try:
-                encoded = encoder.transform([input_dict[col]])[0]
-            except Exception as e:
-                print(f"Error encode kolom '{col}' dengan nilai '{input_dict[col]}': {e}")
-                raise HTTPException(status_code=400, detail=f"Nilai '{input_dict[col]}' tidak dikenali untuk kolom '{col}'.")
-            print(f"Encoded {col}: {encoded}")
-            encoded_features.append(encoded)
+            except Exception as row_err:
+                results.append({
+                    "error": str(row_err),
+                    "original_data": row.to_dict()
+                })
 
-        print("Fitur akhir (encoded + numerik):", encoded_features)
+        # Pagination
+        page_size = 50
+        total = len(results)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated_results = sanitize_json(results[start:end])
 
-        X = np.array([encoded_features])
+        return JSONResponse(content={
+            "success": True,
+            "page": page,
+            "per_page": page_size,
+            "total": total,
+            "total_pages": math.ceil(total / page_size),
+            "results": paginated_results
+        })
 
-        prediction = model.predict(X)[0]
-        pred_label = label_mapping.get(prediction, "Tidak Diketahui")
-        print(f"Prediksi model: {prediction} ({pred_label})")
-
-        # Predict probabilitas, cek apakah model support predict_proba
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X)[0]
-            print("Probabilitas prediksi:", proba)
-        else:
-            proba = [None, None]
-
-        return {
-            "prediction": pred_label,
-            "label": int(prediction),
-            "probability": {
-                "Tidak Putus Studi": proba[0],
-                "Putus Studi": proba[1]
-            }
-        }
-
-    except HTTPException as http_err:
-        raise http_err
     except Exception as e:
-        print("Error saat prediksi:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Gagal memproses file Excel: {str(e)}")
